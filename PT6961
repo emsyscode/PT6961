@@ -1,0 +1,873 @@
+/****************************************************/
+/* This is not clean and is only one example of code*/
+/*structure!                                        */
+/* OFFCOURSE this code can be optimized, but        */
+/* the idea is let it so simple to be easy catch    */
+/* where can do changes and look to the results     */
+/* PT6961 is a COMMON CATHODE TYPE LED PANEL        */
+/*Multiple display modes (12 segments, 6 grids to 11*/
+/*segments, 7 grids)                                */
+/****************************************************/
+#include <IRremote.h>// Note: This library give-me troubles, 1.0.0 to Arduino Uno, 2.0.1 to 2560??? Not sure!!! Need check it!!!
+
+#define LED_in 7// If 0 write LCD, if 1 read of LCD
+#define LED_clk 8 // if 0 is a command, if 1 is a data0
+#define LED_stb 9 // Must be pulsed to LCD fetch data of bus
+
+#define AdjustPins PIND // This is the PORT D, this allow to me using the pins 3,4,5 to control the clock!
+int receiver_IR = 11;  // Pin used to receive the Infra Red from panel.
+
+IRrecv irrecv(receiver_IR);
+decode_results results;
+unsigned int value = results.value;
+
+/*Global Variables Declarations*/
+unsigned char hours = 0;
+unsigned char minutes = 0;
+unsigned char seconds = 0;
+unsigned char milisec = 0;
+unsigned char points = 0;
+
+unsigned char secs;
+
+unsigned char digit;
+unsigned char number;
+unsigned char numberA0;
+unsigned char numberA1;
+unsigned char numberB0;
+unsigned char numberB1;
+unsigned char numberC0;
+unsigned char numberC1;
+unsigned char numberD0;
+unsigned char numberD1;
+unsigned char numberE0;
+unsigned char numberE1;
+unsigned char numberF0;
+unsigned char numberF1;
+unsigned char H0 = 0b11110110;  // Letter H low byte
+unsigned char H1 = 0b00000000;  // Letter H high byte
+unsigned char F0 = 0b01110001;
+unsigned char F1 = 0b00000000;
+unsigned char E0 = 0b01111001;
+unsigned char E1 = 0b00000000;
+unsigned char P0 = 0b11110011;
+unsigned char P1 = 0b00000000;
+unsigned char O0 = 0b00111111;
+unsigned char O1 = 0b00000000;
+unsigned char G0 = 0b10111101;
+unsigned char G1 = 0b00000000;
+unsigned char Aa = 0b11110111;  // Letter A low byte
+unsigned char Ab = 0b00000000;  // Letter A high byte
+unsigned char L0 = 0b00111000;
+unsigned char L1 = 0b00000000;
+unsigned char S0 = 0b11101101;
+unsigned char S1 = 0b00000000;
+unsigned char I0 = 0b00110000;
+unsigned char I1 = 0b00000000;
+
+unsigned char grid;
+unsigned char gridSegments = 0b00000011; // Here I define the number of GRIDs and Segments I'm using
+                                         // On this chip (PT6961) I use 7 digits and 11 segm. See the 
+                                         // table on datasheet of COMMANDS 1: DISPLAY MODE SETTING COMMANDS !
+unsigned char wordA = 0;
+unsigned char wordB = 0;
+
+unsigned int k=0;
+int upLED=-1; // Necessary with signal, because reach value -1
+
+boolean flag=true;
+boolean flgLED1 = true;
+boolean flgLED2 = true;
+boolean flgLED3 = true;
+boolean flgLED4 = true;
+boolean flgUpDown=true;
+
+void clear_LED(void);
+void InfraRed(void);
+
+unsigned int segments[] ={
+  //  Use 2 byte to do a digit of 7 segments, the second byte have the "g", 2 points...  // 
+  //  0bTSfedcba, 0b-----UXZ  //segment "g" is on some digits replaced by: T&S, U: text "pro scan",X: low vertical bar, Z: up vertical bar.
+      0b00111111, 0b00000000,//0   
+      0b00000110, 0b00000000,//1     
+      0b11011011, 0b00000000,//2   
+      0b11001111, 0b00000000,//3    
+      0b11100110, 0b00000000,//4   
+      0b11101101, 0b00000000,//5   // first bit left is second score of middle of digit(3,4,5,6)
+      0b11111101, 0b00000000,//6   
+      0b00000111, 0b00000000,//7   
+      0b11111111, 0b00000000,//8   
+      0b11100111, 0b00000000,//9   
+      0b00000000, 0b00000000,//10 Empty display
+      0b11111111, 0b11111111// to do tests
+  };
+void PT6961_init(void){
+  delayMicroseconds(200); //power_up delay
+  // Note: Allways the first byte in the input data after the STB go to LOW is interpret as command!!!
+
+  // Configure LED display (grids)
+  cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+  delayMicroseconds(1);
+  // Write to memory display, increment address, normal operation
+  cmd_with_stb(0b01000000);//(BIN(01000000));
+  delayMicroseconds(1);
+  // Address 00H - 15H ( total of 11*2Bytes=176 Bits)
+  cmd_with_stb(0b11000000);//(BIN(01100110)); //COMMANDS 3: ADDRESS SETTING COMMANDS 
+  delayMicroseconds(1);
+  // set DIMM/PWM to value
+  cmd_with_stb((0b10001000) | 7);//0 min - 7 max  )(0b01010000)
+  delayMicroseconds(1);
+}
+void cmd_without_stb(unsigned char a){
+  // send without stb
+  unsigned char transmit = 7; //define our transmit pin
+  unsigned char data = 170; //value to transmit, binary 10101010
+  unsigned char mask = 1; //our bitmask
+  
+  data=a;
+  //This don't send the strobe signal, to be used in burst data send
+   for (mask = 00000001; mask>0; mask <<= 1) { //iterate through bit mask
+     digitalWrite(LED_clk, LOW);
+     if (data & mask){ // if bitwise AND resolves to true
+        digitalWrite(LED_in, HIGH);
+     }
+     else{ //if bitwise and resolves to false
+       digitalWrite(LED_in, LOW);
+     }
+    delayMicroseconds(5);
+    digitalWrite(LED_clk, HIGH);
+    delayMicroseconds(5);
+   }
+   //digitalWrite(LED_clk, LOW);
+}
+void cmd_with_stb(unsigned char a){
+  // send with stb
+  unsigned char transmit = 7; //define our transmit pin
+  unsigned char data = 170; //value to transmit, binary 10101010
+  unsigned char mask = 1; //our bitmask
+  
+  data=a;
+  
+  //This send the strobe signal
+  //Note: The first byte input at in after the STB go LOW is interpreted as a command!!!
+  digitalWrite(LED_stb, LOW);
+  delayMicroseconds(1);
+   for (mask = 00000001; mask>0; mask <<= 1) { //iterate through bit mask
+     digitalWrite(LED_clk, LOW);
+     delayMicroseconds(1);
+     if (data & mask){ // if bitwise AND resolves to true
+        digitalWrite(LED_in, HIGH);
+     }
+     else{ //if bitwise and resolves to false
+       digitalWrite(LED_in, LOW);
+     }
+    digitalWrite(LED_clk, HIGH);
+    delayMicroseconds(1);
+   }
+   digitalWrite(LED_stb, HIGH);
+   delayMicroseconds(1);
+}
+void test_LED(void){
+  /* 
+  Here do a test for all segments of 6 grids
+  each grid is controlled by a group of 2 bytes
+  by these reason I'm send a burst of 2 bytes of
+  data. The cycle for do a increment of 3 bytes on 
+  the variable "i" on each test cycle of FOR.
+  */
+  // to test 6 grids is 6*3=18, the 8 gird result in 8*3=24.
+ 
+  clear_LED();
+      
+      digitalWrite(LED_stb, LOW);
+      delayMicroseconds(1);
+      cmd_with_stb(gridSegments); // cmd 1 // number of Grids and number of Segments
+      cmd_with_stb(0b01000000); // cmd 2 //Normal operation; Set pulse as 1/16
+      
+        digitalWrite(LED_stb, LOW);
+        delayMicroseconds(1);
+        cmd_without_stb((0b11000000)); //cmd 3 wich define the start address (00H to 15H)
+        
+         for (int i = 0; i < 14 ; i=i+2){ // test base to 16 segm and 6 grids
+         cmd_without_stb(0b11111111); // Data to fill table 5*16 = 80 bits
+         cmd_without_stb(0b11111111); // Data to fill table 5*16 = 80 bits
+         }
+      cmd_with_stb((0b10001000) | 7); //Dimming command
+      digitalWrite(LED_stb, HIGH);
+      delay(1);
+      delay(200);  
+}
+void test_Segments_Panel_PT6961(void){
+  clear_LED();
+      digitalWrite(LED_stb, LOW);
+      delayMicroseconds(1);
+      cmd_with_stb(gridSegments); // cmd 1 // 7 Grids & 11 Segments
+      cmd_with_stb(0b01000000); // cmd 2 //Normal operation; Set pulse as 1/16
+            for (int n=0; n < 14; n=n+2){
+                       for (int i = 0; i < 16 ; i++){ // test base to 16 segm and 7 grids
+                          digitalWrite(LED_stb, LOW);
+                          delayMicroseconds(1);
+                            cmd_without_stb(0b11000000 | n); //cmd 3 wich define the start address (00H to 15H)
+                            if(i<8){
+                              cmd_without_stb(0b00000001 << i); //
+                              cmd_without_stb(0b00000000);
+                            }
+                              else{
+                              cmd_without_stb(0b00000000);
+                              cmd_without_stb(0b00000001 << (i-8)); //
+                              }
+                            digitalWrite(LED_stb, HIGH);
+                           cmd_with_stb((0b10001000) | 7); //cmd 4
+                          delay(10000);
+                       }
+                       delay(10000);
+                       clear_LED();
+             }
+}
+void test_LED_common_cathode(void){
+  /* 
+  Here do a test for all segments of 7 grids
+  each grid is controlled by a group of 2 bytes
+  by these reason I'm send a burst of 2 bytes of
+  data. The cycle for do a send of 2 bytes on 
+  the variable "i" on each test cycle of FOR.
+  */
+  // to test 6 grids is 6*3=18, the 8 grid result in 8*3=24.
+clear_LED();   
+digitalWrite(LED_stb, LOW);
+delayMicroseconds(1);
+cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+cmd_with_stb(0b01000000); // cmd 2 //Normal operation; Set pulse as 1/16
+digitalWrite(LED_stb, LOW);
+delayMicroseconds(1);
+cmd_without_stb((0b11000000)); //cmd 3 wich define the start address (00H to 15H)
+             for (int i = 0; i < 8 ; i++){ // test base to 16 segm and 7 grids
+             cmd_without_stb(0b11111111); // Data to fill table 5*16 = 80 bits
+             cmd_without_stb(0b11111111); // Data to fill table 5*16 = 80 bits
+             }
+        digitalWrite(LED_stb, HIGH);
+        delayMicroseconds(1);
+        cmd_with_stb((0b10001000) | 7); //cmd 4
+        delay(1);
+        delay(2000);
+}
+void test_LED_grid(void){
+  byte s=0; // Used to define the digits between 0 and 6.
+  clear_LED();
+      //
+      digitalWrite(LED_stb, LOW);
+      delayMicroseconds(1);
+      cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+      cmd_with_stb(0b01000000);   // cmd 2 //Normal operation; Set pulse as 1/16
+      cmd_with_stb((0b11000000)); // cmd 3 wich define the start address (00H to 15H)
+          for (int i = 0; i < 20 ; i++){ // test base to 15 segm and 7 grids
+          digitalWrite(LED_stb, LOW);
+          delayMicroseconds(1);
+            cmd_without_stb((0b11000000) | s);
+            s=s+1;
+            if (s>13){
+              s=0;
+              }
+                 cmd_without_stb(segments[i]); // Fill table byte with char address (i & i+1)
+                 cmd_without_stb(segments[i+1]); // 
+                 digitalWrite(LED_stb, HIGH);
+                 cmd_with_stb((0b10001000) | 7); //Dimming command
+            delay(1);
+            digitalWrite(LED_stb, LOW);
+            delayMicroseconds(1);
+            delay(200);  // Delay to allow see the digit on the Display
+            cmd_without_stb((0b11000000) | s-2);  // To clear the memory position, don't forget when write increment it, by this reason do a (-2) operation!
+            cmd_without_stb(0b00000000); // Data to clear LED
+            cmd_without_stb(0b00000000); // Data to clear LED
+            digitalWrite(LED_stb, HIGH);
+            cmd_with_stb((0b10001000) | 7); //Dimming command
+            delay(1);
+            delay(10); // Delay to see the display cleared
+          }
+}
+void clear_LED(void){
+  /*
+  Here I clean all registers 
+  Could be done only on the number of grid
+  to be more fast. The 12 * 3 bytes = 36 registers
+  */
+      for (int n=0; n < 14; n=n+2){  // 5 grids, this means 10 bytes of memory, advance 2 by 2!
+        cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+        cmd_with_stb(0b01000000); //   cmd 2 //Normal operation; Set pulse as 1/16
+        digitalWrite(LED_stb, LOW);
+        delayMicroseconds(1);
+            cmd_without_stb((0b11000000) | n); // cmd 3 //wich define the start address (00H to 0DH)
+            cmd_without_stb(0b00000000); // Data to fill table, this deppending of number of grids is active!!! (4~7*8bits*2)
+            cmd_without_stb(0b00000000);
+            //
+            //cmd_with_stb((0b10001000) | 7); //Dimming command
+            digitalWrite(LED_stb, HIGH);
+            delayMicroseconds(100);
+     }
+}
+void writeOLApessoal(){
+  //send7segmSingleDigit, Parameters: Low byte, High byte, grid position.
+  send7segmSingleDigit(O0, O1, 0);
+  delay(20000);
+  send7segmSingleDigit(L0, L1, 2);
+  delay(20000);
+  send7segmSingleDigit(Aa, Ab, 4);
+  delay(20000);
+  delay(100000);
+  send7segmSingleDigit(P0, P1, 0);
+  delay(20000);
+  send7segmSingleDigit(E0, E1, 2);
+  delay(20000);
+  send7segmSingleDigit(S0, S1, 4);
+  delay(20000);
+  send7segmSingleDigit(S0, S1, 6);
+  delay(20000);
+  send7segmSingleDigit(O0, O1, 8);
+  delay(20000);
+  send7segmSingleDigit(Aa, Ab, 10);
+  delay(20000);
+  send7segmSingleDigit(L0, L1, 12);
+  delay(20000);
+  delay(200000);
+}
+void writeHiPeople(){
+   send7segmSingleDigit(H0, H1, 0);
+  delay(20000);
+  send7segmSingleDigit(I0, I1, 2);
+  delay(20000);
+  delay(100000);
+  send7segmSingleDigit(P0, P1, 0);
+  delay(20000);
+  send7segmSingleDigit(E0, E1, 2);
+  delay(20000);
+  send7segmSingleDigit(O0, O1, 4);
+  delay(20000);
+  send7segmSingleDigit(P0, P1, 6);
+  delay(20000);
+  send7segmSingleDigit(L0, L1, 8);
+  delay(20000);
+  send7segmSingleDigit(E0, E1, 10);
+  delay(20000);
+  delay(200000);
+}
+/******************************************************************/
+/************************** Update Clock **************************/
+/******************************************************************/
+void send_update_clock(void){
+  if (secs >=60){
+    secs =0;
+    minutes++;
+  }
+  if (minutes >=60){
+    minutes =0;
+    hours++;
+  }
+  if (hours >=24){
+    hours =0;
+  }
+    //*************************************************************
+    DigitTo7SegEncoder(secs%10);
+    //Serial.println(secs, DEC); //Only to debug
+    numberA0=segments[number];
+    numberA1=segments[number+1];
+    DigitTo7SegEncoder(secs/10);
+    //Serial.println(secs, DEC); //Only to debug
+    numberB0=segments[number];
+    numberB1=segments[number+1];
+    SegTo32Bits();
+    //*************************************************************
+    DigitTo7SegEncoder(minutes%10);
+    numberC0=segments[number];
+    numberC1=segments[number+1];
+    DigitTo7SegEncoder(minutes/10);
+    numberD0=segments[number];
+    numberD1=segments[number+1];
+    SegTo32Bits();
+    //**************************************************************
+    DigitTo7SegEncoder(hours%10);
+    numberE0=segments[number];
+    numberE1=segments[number+1];
+    DigitTo7SegEncoder(hours/10);
+    numberF0=segments[number];
+    numberF1=segments[number+1];
+    SegTo32Bits();
+    //**************************************************************
+    /*
+     * // Only to debug!!!
+    Serial.println(numberA0);
+    Serial.println(numberA1);
+    Serial.println(numberB0);
+    Serial.println(numberB1);
+    Serial.println("Tst");
+     */
+}
+void SegTo32Bits(){
+  //Note that the digit zero is the leftmost of the display
+  digitalWrite(LED_stb, LOW);
+  delayMicroseconds(10);
+      cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+      cmd_with_stb(0b01000000); // cmd 2 //Normal operation; Set pulse as 1/16
+      
+        digitalWrite(LED_stb, LOW);
+        delayMicroseconds(10);
+        cmd_without_stb((0b11000000) | 0x00); //cmd 3 wich define the start address (00H to 15H)
+          // Here you can adjuste which grid represent the values of clock
+          // each grid use 2 bytes of memory registers
+
+          // Grid 0
+          cmd_without_stb(numberF0);      // Hours dozens
+          cmd_without_stb(numberF1);      //
+          
+          // Digit 1
+          cmd_without_stb(numberE0);      // Hours units
+          cmd_without_stb(numberE1);      //
+          // Digit 2
+          cmd_without_stb(0b01000000);      //Middle trace between hours and minutes
+          cmd_without_stb(0x00); 
+
+          // Digit 3
+              cmd_without_stb(numberD0); //  
+              cmd_without_stb(numberD1); //
+            
+        
+          // Digit 4
+              if(flag==false){
+              cmd_without_stb(numberC0); // Minutes dozens and 1 points 
+              cmd_without_stb(0b00000100); // I'm use the dot's, but you can use the score
+              }
+              else{
+              cmd_without_stb(numberC0);  // space between digits (2 points???)
+              cmd_without_stb(0b00000000);
+              }      
+          
+          //Digit 5
+            if(flag==false){
+            cmd_without_stb(numberB0);      // Minutes units
+            cmd_without_stb(0b00000100);    // Only to used with digits drawed by 2 bytes.
+            }
+            else{
+            cmd_without_stb(numberB0);      // Seconds  dozens
+            cmd_without_stb(0b00000000);    // Only to used with digits drawed by 2 bytes.
+            }
+          // Digit 6
+            cmd_without_stb(numberA0);      // Seconds  Units
+            cmd_without_stb(numberA1);      // Only to used with digits drawed by 2 bytes.
+      digitalWrite(LED_stb, HIGH);
+      delayMicroseconds(10);
+      cmd_with_stb((0b10001000) | 7); //cmd 4
+      delayMicroseconds(1);
+}
+/***************************** This identify the array[] position to the number ****************************/
+void DigitTo7SegEncoder(unsigned char digit){
+  switch(digit){
+    //Is important the number here, because if only use a byte, use from 0~9, case use 2 bytes use from 0~18!!!!
+    case 0:   number=0;     break;  // if remove the LongX, need put here the segments[x]
+    case 1:   number=2;     break;
+    case 2:   number=4;     break;
+    case 3:   number=6;     break;
+    case 4:   number=8;     break;
+    case 5:   number=10;     break;
+    case 6:   number=12;     break;
+    case 7:   number=14;     break;
+    case 8:   number=16;     break;
+    case 9:   number=18;     break;
+  }
+} 
+/************************************** Depending of Buttons to adjust time ******************************/
+void adjustHMS(){
+ // Important is necessary put a pull-up resistor to the VCC(+5VDC) to this pins (3, 4, 5) if you use to adjuste the time!
+ // here I'm using pins 2, 3 and 4 to control the LED's, adapte how you need it!
+ // if dont want adjust of the time comment the call of function on the loop
+  /* Reset Seconds to 00 Pin number 3 Switch to GND*/
+    if((AdjustPins & 0x08) == 0 )
+    {
+      _delay_ms(200);
+      secs=00;
+    }
+    
+    /* Set Minutes when SegCntrl Pin 4 Switch is Pressed*/
+    if((AdjustPins & 0x10) == 0 )
+    {
+      _delay_ms(200);
+      if(minutes < 59)
+      minutes++;
+      else
+      minutes = 0;
+    }
+    /* Set Hours when SegCntrl Pin 5 Switch is Pressed*/
+    if((AdjustPins & 0x20) == 0 )
+    {
+      _delay_ms(200);
+      if(hours < 23)
+      hours++;
+      else
+      hours = 0;
+    }
+}
+/********************************* Send 7 segments Only to test ********************************************/
+void send7segm(unsigned char v){
+      cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+      cmd_with_stb(0b01000000);   // cmd 2 //Normal operation; Set pulse as 1/16
+        digitalWrite(LED_stb, LOW);
+        delayMicroseconds(1);
+          cmd_without_stb((0b11000000));  //cmd 3 wich define the start address (00H to 15H)
+          cmd_without_stb(segments[v]);   //Grid 0 Each table of grid is addressed by 2 bytes 
+          cmd_without_stb(segments[v]);   //Grid 0
+          cmd_without_stb(segments[v]);   //Grid 1
+          cmd_without_stb(segments[v]);   //Grid 1
+          cmd_without_stb(segments[v]);   //Grid 2
+          cmd_without_stb(segments[v]);   //Grid 2
+          cmd_without_stb(segments[v]);   //Grid 3
+          cmd_without_stb(segments[v]);   //Grid 3
+          cmd_without_stb(segments[v]);   //Grid 4
+          cmd_without_stb(segments[v]);   //Grid 4
+          cmd_without_stb(segments[v]);   //Grid 5
+          cmd_without_stb(segments[v]);   //Grid 5
+          cmd_without_stb(segments[v]);   //Grid 6
+          cmd_without_stb(segments[v]);   //Grid 6
+      digitalWrite(LED_stb, HIGH);
+      cmd_with_stb((0b10001000) | 7); //Dimming command
+      delay(1);
+      delay(200);  
+}
+void send7segmSingleDigit(unsigned char v0, unsigned char v1, unsigned int cathode){
+      cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+      cmd_with_stb(0b01000000);   // cmd 2 //Normal operation; Set pulse as 1/16
+        digitalWrite(LED_stb, LOW);
+        delayMicroseconds(1);
+          cmd_without_stb((0b11000000) | cathode);  //cmd 3 wich define the start address (00H to 15H)
+          cmd_without_stb(v0); //Grid 0 Each table of grid is addressed by 2 bytes 
+          cmd_without_stb(v1); //Grid 0
+      digitalWrite(LED_stb, HIGH);
+      cmd_with_stb((0b10001000) | 7); //Dimming command
+      delay(1);
+      delay(200);  
+}
+void sendBitSegm(){
+      cmd_with_stb(gridSegments); // cmd 1// Command to define the number of grids and segments
+      cmd_with_stb(0b01000000);   // cmd 2 //Normal operation; Set pulse as 1/16
+        digitalWrite(LED_stb, LOW);
+        delayMicroseconds(1);
+          cmd_without_stb((0b11000000));  //cmd 3 wich define the start address (00H to 15H)
+          cmd_without_stb(0b00000000);   //Grid 0 Each table of grid is addressed by 2 bytes 
+          cmd_without_stb(0b00000000);   //Grid 0
+          cmd_without_stb(0b00000000);   //Grid 1
+          cmd_without_stb(0b00000000);   //Grid 1
+          cmd_without_stb(0b10000000);   //Grid 2  //This bite write the middle trace up in 3� grid: cmd_without_stb(0b10000000);
+          cmd_without_stb(0b00000011);   //Grid 2  //This bite write the middle trace and the 2 points of 3� grid: cmd_without_stb(0b00000011);
+          cmd_without_stb(0b00000000);   //Grid 3
+          cmd_without_stb(0b00000000);   //Grid 3
+          cmd_without_stb(0b00000000);   //Grid 4
+          cmd_without_stb(0b00000000);   //Grid 4
+          cmd_without_stb(0b00000000);   //Grid 5
+          cmd_without_stb(0b00000000);   //Grid 5
+          cmd_without_stb(0b00000000);   //Grid 6
+          cmd_without_stb(0b00000000);   //Grid 6
+      digitalWrite(LED_stb, HIGH);
+      cmd_with_stb((0b10001000) | 7); //Dimming command
+      delay(1);
+      delay(200);  
+}
+/*************************** Read Buttons **************************************/
+void readButtons(){
+//Take special attention to the initialize digital pin LED_BUILTIN as an output.
+//Note I'm using the pin 7 to connect to the Data In and Data Out through a resistors to respectively pins I/O of PT6961
+int ledPin = 13;   // LED connected to digital pin 13, this is only to monitorize the buttons read process!
+int inPin = 7;     // pushbutton connected to digital pin 7
+int val = 0;       // variable to store the read value
+int dataIn=0;
+
+byte array[8] = {0,0,0,0,0,0,0,0};
+byte together = 0;
+
+unsigned char receive = 7; //define our transmit pin
+unsigned char data = 0; //value to transmit, binary 10101010
+unsigned char mask = 1; //our bitmask
+
+array[0] = 1;
+
+unsigned char btn1 = 0x41;
+
+      digitalWrite(LED_stb, LOW);
+      delayMicroseconds(2);
+      cmd_without_stb(0b01000010); // cmd 2 //Read Keys;Normal operation; Set pulse as 1/16
+      
+  pinMode(7, INPUT_PULLUP);  // Important this point! Here I'm changing the direction of the pin to INPUT data.
+  delayMicroseconds(2);
+  //PORTD != B01010100; // this will set only the pins you want and leave the rest alone at
+  //their current value (0 or 1), be careful setting an input pin though as you may turn 
+  //on or off the pull up resistor  
+  //This don't send the strobe signal, to be used in burst data send
+         for (int z = 0; z < 5; z++){
+             //for (mask=00000001; mask > 0; mask <<= 1) { //iterate through bit mask
+                   for (int h =8; h > 0; h--) {
+                      digitalWrite(LED_clk, HIGH);  // Remember wich the read data happen when the clk go from LOW to HIGH! Reverse from write data to out.
+                      delayMicroseconds(2);
+                     val = digitalRead(inPin);
+                      //digitalWrite(ledPin, val);    // sets the LED to the button's value
+                           if (val & mask){ // if bitwise AND resolves to true
+                             //Serial.print(val);
+                            //data =data | (1 << mask);
+                            array[h] = 1;
+                           }
+                           else{ //if bitwise and resolves to false
+                            //Serial.print(val);
+                           // data = data | (1 << mask);
+                           array[h] = 0;
+                           }
+                    digitalWrite(LED_clk, LOW);
+                    delayMicroseconds(2);
+                   } 
+             
+              Serial.print(z);  // All the lines of print is only used to debug, comment it, please!
+              Serial.print(" - " );
+                        
+                                  for (int bits = 7 ; bits > -1; bits--) {
+                                      Serial.print(array[bits]);
+                                   }
+                        
+                        if (z==0){
+                          if(array[7] == 1){
+                           hours++;
+                          }
+                        }
+                          if (z==0){
+                            if(array[4] == 1){
+                             hours--;
+                            }
+                          }
+                          if (z==0){
+                            if(array[6] == 1){
+                             minutes++;
+                            }
+                        }
+                        if (z==0){
+                          if(array[3] == 1){
+                           minutes--;
+                          }
+                        }
+                        if (z==1){
+                          if(array[3] == 1){
+                           hours = 0;
+                           minutes = 0;
+                           secs = 0;
+                          }
+                        }
+                         
+                        if (z==2){
+                            if(array[4] == 1){
+                             
+                          }
+                        }
+                        
+                        if (z==3){
+                           if(array[7] == 1){
+                            
+                            }
+                          }                        
+                  Serial.println();
+          }  // End of "for" of "z"
+      Serial.println();  // This line is only used to debug, please comment it!
+
+ digitalWrite(LED_stb, HIGH);
+ delayMicroseconds(2);
+ cmd_with_stb((0b10001000) | 7); //Dimming cmd
+ delayMicroseconds(2);
+ pinMode(7, OUTPUT);  // Important this point!  // Important this point! Here I'm changing the direction of the pin to OUTPUT data.
+ delay(1); 
+}
+/*************************************** Active ports of Barr LED's ******************************/
+ void bar(int s, boolean flgUpDown){
+  Serial.print("s: ");
+  Serial.println(s, DEC);
+          if (flgUpDown==true){  // The flag define if is Up or Down and wich switch will go be used!!!
+                    switch (s){
+                        case 0: PORTD |= ((1 << PIND2)); break; // On LED connecte PORTD pin 2 //Moviment Up
+                        case 1: PORTD |= ((1 << PIND3)); break;
+                        case 2: PORTD |= ((1 << PIND4)); break;
+                        case 3: PORTD |= ((1 << PIND5)); break;
+                        case 4: PORTD |= ((1 << PIND6)); break;
+                        case 5: PORTC |= ((1 << PINC0)); break;
+                        case 6: PORTC |= ((1 << PINC1)); break;
+                        case 7: PORTC |= ((1 << PINC2)); break;
+                        case 8: PORTC |= ((1 << PINC3)); break;
+                        case 9: PORTC |= ((1 << PINC4)); break;
+                    }
+          }
+          else{
+                        switch (s){
+                        case 0: PORTD &= (~(1 << PIND2)); break; // Off LED connected PORTD pin 2 //Moviment Down
+                        case 1: PORTD &= (~(1 << PIND3)); break;
+                        case 2: PORTD &= (~(1 << PIND4)); break;
+                        case 3: PORTD &= (~(1 << PIND5)); break;
+                        case 4: PORTD &= (~(1 << PIND6)); break;
+                        case 5: PORTC &= (~(1 << PINC0)); break;
+                        case 6: PORTC &= (~(1 << PINC1)); break;
+                        case 7: PORTC &= (~(1 << PINC2)); break;
+                        case 8: PORTC &= (~(1 << PINC3)); break;
+                        case 9: PORTC &= (~(1 << PINC4)); break;
+                      }
+             }
+ }
+/********************************* Decision of code IR received *******************************/
+void InfraRed(void){
+  // IR zone
+  // Note 1: Case use a different protocol of IR, active the "Serial Monitor" to see the number 
+  // you receive from your command and adapte the code to this values!
+  // Note 2: This is one way to do this without changing the pins of: (data in: 7), (clock: 8) and (Strobe: 9)
+  // Of course the code could be simpler here using another pin range!
+  //"results" is used as pointer( *results )
+  //
+  //Here I'm using the numbers 1, 2 & 3  of a universall TV command to turn on/off a LED RGB
+  //First press of 1 turn on, secnd press of 1 turn off
+ unsigned int val = 0x0000;  
+            if (irrecv.decode(&results)) {
+              Serial.println(results.value, HEX);
+              val = (results.value & 0xffff0000UL) >>  16;
+              irrecv.resume(); // Receive the next value
+             }
+              
+        //Serial.println(val, HEX);
+              switch(results.value){
+                  case 0x1:   digitalWrite(2, HIGH); break;
+                  case 0x801: digitalWrite(2, LOW); break;
+                  //1
+                  case 0x2:   digitalWrite(3, HIGH); break;
+                  case 0x802: digitalWrite(3, LOW); break;
+                  //2
+                  case 0x3:   digitalWrite(4, HIGH); break;
+                  case 0x803: digitalWrite(4, LOW); break;
+              }
+              
+              results.value=0x00000000;
+              Serial.println(upLED, DEC);  //Please, comment the Print lines, they was only to debug!            
+}
+/****************************************** Setup of Arduino Uno ****************************************/
+void setup() {
+// put your setup code here, to run once:
+
+// initialize digital pin LED_BUILTIN as an output.
+  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(LED_in, OUTPUT);
+  pinMode(LED_clk, OUTPUT);
+  pinMode(LED_stb, OUTPUT);
+  pinMode(receiver_IR, INPUT);
+  pinMode(2, OUTPUT); // Case use the buttons to setting the clock.
+  pinMode(3, OUTPUT);
+  pinMode(4, OUTPUT);
+  
+  Serial.begin(115200);
+
+// Initialize of IR reception
+// In case the interrupt driver crashes on setup, give a clue
+// to the user what's going on.
+  Serial.println("Enabling IRin");
+  irrecv.enableIRIn(); // Start the receiver
+  Serial.println("Enabled IRin");
+ 
+  seconds   =0x00;
+  minutes   =0x00;
+  hours     =0x00;
+
+  /*CS12  CS11 CS10 DESCRIPTION
+  0        0     0  Timer/Counter1 Disabled 
+  0        0     1  No Prescaling
+  0        1     0  Clock / 8
+  0        1     1  Clock / 64
+  1        0     0  Clock / 256
+  1        0     1  Clock / 1024
+  1        1     0  External clock source on T1 pin, Clock on Falling edge
+  1        1     1  External clock source on T1 pin, Clock on rising edge
+ */
+  // initialize timer1 
+  cli();           // disable all interrupts
+  // initialize timer1 
+  //noInterrupts();           // disable all interrupts
+  TCCR1A = 0;
+  TCCR1B = 0;// This initialisations is very important, to have sure the trigger take place!!!
+  TCNT1  = 0;
+  // Use 62499 to generate a cycle of 1 sex 2 X 0.5 Secs (16MHz / (2*256*(1+62449) = 0.5
+  OCR1A = 62498;            // compare match register 16MHz/256/2Hz
+  //OCR1A = 500; // only to use in test, increment seconds to fast!
+  TCCR1B |= (1 << WGM12);   // CTC mode
+  TCCR1B |= ((1 << CS12) | (0 << CS11) | (0 << CS10));    // 256 prescaler 
+  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
+ 
+// Note: this counts is done to a Arduino 1 with Atmega 328... Is possible you need adjust
+// a little the value 62499 upper or lower if the clock have a delay or advance hours.
+
+CLKPR=(0x80);  // Please keep and check this line of code because the prescaler and time counter is importante!
+
+//Notes as set the PORT's
+//DDRD is the direction register for Port D (Arduino digital pins 0-7). 
+//DDRD = B11111110;  // sets Arduino pins 1 to 7 as outputs, pin 0 as input
+//DDRD = DDRD | B11111100;  // this is safer as it sets pins 2 to 7 as outputs
+                            // without changing the value of pins 0 & 1, which are RX & TX
+// IMPORTANT: from pin 0 to 7 is port D, from pin 8 to 13 is port B
+                             
+//PORTD is the register for the state of the outputs. For example                            
+//PORTD = B10101000; // sets digital pins 7,5,3 HIGH                           
+//PORTD != B01010100; // this will set only the pins you want and leave the rest alone at
+//their current value (0 or 1), be careful setting an input pin though as you may turn 
+//on or off the pull up resistor  
+DDRD = DDRD | B11111100;  //Sets pins 2 to 7 as outputs without changing the value of pins 0 & 1, which are RX & TX
+PORTD !=0x40;
+DDRB =B11110111; // Pin 11 to input, receive the IR signal
+PORTB =0x00;  // Don't active Pull Up resistor's
+DDRC = 0xFF;
+PORTC = 0x00;
+
+PT6961_init();
+
+//only here I active the enable of interrupts to allow run the test of LED
+//interrupts();             // enable all interrupts
+//sei();
+}
+/******************************************** RUN ************************************************/
+void loop() {
+unsigned char v=22;  //22 & 23 is the positions of symbol at twelve position!
+// You can comment untill while cycle to avoid the test running.
+clear_LED();
+Serial.println(v, DEC);
+Serial.println(v, HEX);
+//send7segmSingleDigit(v, v, 3);  // Parameter:  Segment, segment, cathode(same as grid)
+writeOLApessoal();
+clear_LED(); // Need clear the DSP because the word "Pessoal" is more wicht "People" and stay with char on DSP.
+writeHiPeople();
+ 
+delay(5000);
+test_Segments_Panel_PT6961(); //Test of segment by segment!
+test_LED_grid();
+delay(500);
+test_LED_common_cathode();
+delay(500);
+test_LED();
+delay(500);
+clear_LED();
+//
+sendBitSegm();  // Only to debug and find 2 points of middle!
+//
+// Can use this cycle to teste all segments of LED
+       for(int h=0; h < 14; h=h+2){
+       send7segm(h);
+       delay(30000);
+       }
+//
+  clear_LED();
+//
+sei();  // Only here I activet the trigger to avoid delays on Start
+      while(1){
+        send_update_clock();
+        delay(100);
+        readButtons();
+        delay(100);
+        InfraRed();
+        delay(100);
+      }
+}
+/*************************************** Interrupt ***********************************************/
+ISR(TIMER1_COMPA_vect)   {  //This is the interrupt request
+                            // https://sites.google.com/site/qeewiki/books/avr-guide/timers-on-the-atmega328
+      secs++;
+      flag = !flag;
+} 
